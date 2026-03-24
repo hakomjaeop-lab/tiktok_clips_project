@@ -50,32 +50,27 @@ def ensure_bucket_exists():
 
 def download_youtube_video(url):
     ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'format': 'best',
         'outtmpl': os.path.join(UPLOAD_FOLDER, '%(id)s.%(ext)s'),
+        'nocheckcertificate': True,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=True)
         return ydl.prepare_filename(info)
 
 def get_best_moments(video_path):
-    # في نسخة حقيقية، يمكننا إرسال لقطات أو صوت لـ Gemini
-    # هنا سنطلب منه اقتراح أوقات عشوائية ذكية بناءً على طول الفيديو (كمثال)
-    # ملاحظة: Gemini 1.5 Flash يدعم تحليل الفيديو مباشرة إذا تم رفعه
     prompt = "أنا أقوم بتقسيم فيديو إلى مقاطع TikTok. اقترح لي 3 لحظات مثيرة (بداية ونهاية بالثواني) لفيديو مدته غير معروفة، افترض أنه طويل. أجب بتنسيق JSON فقط: [{'start': 10, 'end': 40}, ...]"
     try:
         response = model.generate_content(prompt)
-        # استخراج JSON من النص
         match = re.search(r'\[.*\]', response.text, re.DOTALL)
         if match:
             return json.loads(match.group())
     except:
         pass
-    return [{'start': 30, 'end': 60}, {'start': 120, 'end': 150}] # قيم افتراضية في حال الفشل
+    return [{'start': 30, 'end': 60}, {'start': 120, 'end': 150}]
 
 def process_video_to_tiktok(input_path, output_path, start_time, end_time):
     duration = end_time - start_time
-    # FFmpeg: قص الوقت + تحويل الأبعاد لـ 9:16 (TikTok) مع Crop من المنتصف
-    # التنسيق: 1080x1920
     cmd = (
         f'ffmpeg -ss {start_time} -t {duration} -i "{input_path}" '
         f'-vf "crop=ih*(9/16):ih,scale=1080:1920" '
@@ -84,17 +79,13 @@ def process_video_to_tiktok(input_path, output_path, start_time, end_time):
     subprocess.call(cmd, shell=True)
 
 def cleanup_old_files():
-    """حذف الملفات من S3 والمجلد المحلي بعد 30 دقيقة"""
     print("Running cleanup task...")
-    # حذف محلي
     now = time.time()
     for f in os.listdir(CLIPS_FOLDER):
         f_path = os.path.join(CLIPS_FOLDER, f)
-        if os.stat(f_path).st_mtime < now - 1800: # 30 mins
+        if os.stat(f_path).st_mtime < now - 1800:
             os.remove(f_path)
-    # ملاحظة: حذف S3 يحتاج تتبع للأوقات في قاعدة بيانات، هنا سنكتفي بالمحلي للتبسيط
 
-# إعداد المجدول للحذف التلقائي
 scheduler = BackgroundScheduler()
 scheduler.add_job(func=cleanup_old_files, trigger="interval", minutes=10)
 scheduler.start()
@@ -108,43 +99,42 @@ def index():
         uploaded_file = request.files.get("video")
         
         video_path = ""
-        if video_url:
-            video_path = download_youtube_video(video_url)
-        elif uploaded_file:
-            filename = secure_filename(uploaded_file.filename)
-            video_path = os.path.join(UPLOAD_FOLDER, filename)
-            uploaded_file.save(video_path)
+        try:
+            if video_url:
+                video_path = download_youtube_video(video_url)
+            elif uploaded_file:
+                filename = secure_filename(uploaded_file.filename)
+                video_path = os.path.join(UPLOAD_FOLDER, filename)
+                uploaded_file.save(video_path)
+        except Exception as e:
+            return f"خطأ أثناء معالجة الفيديو: {str(e)}"
         
         if not video_path:
             return "لم يتم توفير فيديو"
 
-        # 1. الحصول على أفضل اللحظات بالذكاء الاصطناعي
-        moments = get_best_moments(video_path)
-        
-        # 2. معالجة المقاطع (TikTok Format) ورفعها لـ S3
-        ensure_bucket_exists()
-        clips_urls = []
-        base_name = os.path.basename(video_path).split('.')[0]
-        
-        for i, m in enumerate(moments):
-            clip_name = f"{base_name}_clip_{i}.mp4"
-            clip_local_path = os.path.join(CLIPS_FOLDER, clip_name)
+        try:
+            moments = get_best_moments(video_path)
+            ensure_bucket_exists()
+            clips_urls = []
+            base_name = os.path.basename(video_path).split('.')[0]
             
-            # تحويل لـ TikTok
-            process_video_to_tiktok(video_path, clip_local_path, m['start'], m['end'])
-            
-            # رفع لـ S3
-            s3_key = f"tiktok_clips/{base_name}/{clip_name}"
-            s3_client.upload_file(clip_local_path, S3_BUCKET_NAME, s3_key)
-            
-            url = f"{S3_ENDPOINT}/{S3_BUCKET_NAME}/{s3_key}"
-            clips_urls.append(url)
-            
-        # 3. حذف الفيديو الأصلي فوراً
-        if os.path.exists(video_path):
-            os.remove(video_path)
-            
-        return render_template("index.html", clips=clips_urls)
+            for i, m in enumerate(moments):
+                clip_name = f"{base_name}_clip_{i}.mp4"
+                clip_local_path = os.path.join(CLIPS_FOLDER, clip_name)
+                process_video_to_tiktok(video_path, clip_local_path, m['start'], m['end'])
+                
+                s3_key = f"tiktok_clips/{base_name}/{clip_name}"
+                s3_client.upload_file(clip_local_path, S3_BUCKET_NAME, s3_key)
+                
+                url = f"{S3_ENDPOINT}/{S3_BUCKET_NAME}/{s3_key}"
+                clips_urls.append(url)
+                
+            if os.path.exists(video_path):
+                os.remove(video_path)
+                
+            return render_template("index.html", clips=clips_urls)
+        except Exception as e:
+            return f"خطأ أثناء معالجة المقاطع: {str(e)}"
 
     return render_template("index.html", clips=[])
 
