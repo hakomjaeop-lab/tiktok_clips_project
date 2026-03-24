@@ -1,0 +1,8 @@
+flask
+werkzeug
+gunicorn
+boto3
+botocore
+yt-dlp
+google-generativeai
+apscheduler
