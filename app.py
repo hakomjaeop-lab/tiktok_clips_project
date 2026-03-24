@@ -1,17 +1,16 @@
 import os
 import subprocess
-import boto3
 import time
 import json
 import re
 from flask import Flask, render_template, request, jsonify
-from botocore.client import Config
-from botocore.exceptions import ClientError
 from werkzeug.utils import secure_filename
 import yt_dlp
 import google.generativeai as genai
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timedelta
+import cloudinary
+import cloudinary.uploader
 
 app = Flask(__name__)
 
@@ -21,25 +20,18 @@ CLIPS_FOLDER = os.path.join(UPLOAD_FOLDER, "clips")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(CLIPS_FOLDER, exist_ok=True)
 
-# إعدادات ClawCloud S3
-S3_ACCESS_KEY = '7cpqtw4y'
-S3_SECRET_KEY = 'ffrn6gnxbsq4bchb'
-S3_ENDPOINT = 'https://objectstorageapi.us-east-1.clawcloudrun.com'
-S3_BUCKET_NAME = 'video-clips'
+# إعدادات Cloudinary
+cloudinary.config( 
+  cloud_name = "dbyfv4jwh", 
+  api_key = "771897553861346", 
+  api_secret = "L0b_NX2DJVG3MELHJYvGJm-eG_w",
+  secure = True
+)
 
 # إعدادات Gemini AI
 GEMINI_API_KEY = 'AIzaSyA2KpuB4kAF9SiX9qdLeVmKVKKKdGngirk'
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
-
-# تهيئة عميل S3
-s3_client = boto3.client(
-    's3',
-    aws_access_key_id=S3_ACCESS_KEY,
-    aws_secret_access_key=S3_SECRET_KEY,
-    endpoint_url=S3_ENDPOINT,
-    config=Config(signature_version='s3v4', s3={'addressing_style': 'path'})
-)
 
 # --- وظائف المساعدة ---
 
@@ -117,17 +109,18 @@ def index():
                 clip_local_path = os.path.join(CLIPS_FOLDER, clip_name)
                 process_video_to_tiktok(video_path, clip_local_path, m['start'], m['end'])
                 
-                # رفع لـ S3 مع معالجة الأخطاء
-                s3_key = f"tiktok_clips/{base_name}/{clip_name}"
+                # رفع لـ Cloudinary
                 try:
-                    s3_client.upload_file(clip_local_path, S3_BUCKET_NAME, s3_key)
-                    url = f"{S3_ENDPOINT}/{S3_BUCKET_NAME}/{s3_key}"
-                    clips_urls.append(url)
-                except ClientError as e:
-                    print(f"S3 Upload Error: {e}")
-                    # إذا فشل S3، سنستخدم الرابط المحلي كبديل مؤقت (إذا كان Render يدعم ذلك)
-                    # لكن الأفضل إبلاغ المستخدم بمشكلة الرفع
-                    return f"خطأ في رفع الملف لـ S3: {str(e)}"
+                    upload_result = cloudinary.uploader.upload(
+                        clip_local_path, 
+                        resource_type = "video",
+                        folder = "tiktok_clips",
+                        public_id = f"{base_name}_clip_{i}"
+                    )
+                    clips_urls.append(upload_result['secure_url'])
+                except Exception as e:
+                    print(f"Cloudinary Upload Error: {e}")
+                    return f"خطأ في رفع الملف لـ Cloudinary: {str(e)}"
                 
             if os.path.exists(video_path):
                 os.remove(video_path)

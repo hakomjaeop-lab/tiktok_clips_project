@@ -1,8 +1,7 @@
 flask
 werkzeug
 gunicorn
-boto3
-botocore
+cloudinary
 yt-dlp
 google-generativeai
 apscheduler
