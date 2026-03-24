@@ -6,6 +6,7 @@ import json
 import re
 from flask import Flask, render_template, request, jsonify
 from botocore.client import Config
+from botocore.exceptions import ClientError
 from werkzeug.utils import secure_filename
 import yt_dlp
 import google.generativeai as genai
@@ -39,12 +40,6 @@ s3_client = boto3.client(
     endpoint_url=S3_ENDPOINT,
     config=Config(signature_version='s3v4', s3={'addressing_style': 'path'})
 )
-
-def ensure_bucket_exists():
-    try:
-        s3_client.head_bucket(Bucket=S3_BUCKET_NAME)
-    except:
-        s3_client.create_bucket(Bucket=S3_BUCKET_NAME)
 
 # --- وظائف المساعدة ---
 
@@ -114,7 +109,6 @@ def index():
 
         try:
             moments = get_best_moments(video_path)
-            ensure_bucket_exists()
             clips_urls = []
             base_name = os.path.basename(video_path).split('.')[0]
             
@@ -123,11 +117,17 @@ def index():
                 clip_local_path = os.path.join(CLIPS_FOLDER, clip_name)
                 process_video_to_tiktok(video_path, clip_local_path, m['start'], m['end'])
                 
+                # رفع لـ S3 مع معالجة الأخطاء
                 s3_key = f"tiktok_clips/{base_name}/{clip_name}"
-                s3_client.upload_file(clip_local_path, S3_BUCKET_NAME, s3_key)
-                
-                url = f"{S3_ENDPOINT}/{S3_BUCKET_NAME}/{s3_key}"
-                clips_urls.append(url)
+                try:
+                    s3_client.upload_file(clip_local_path, S3_BUCKET_NAME, s3_key)
+                    url = f"{S3_ENDPOINT}/{S3_BUCKET_NAME}/{s3_key}"
+                    clips_urls.append(url)
+                except ClientError as e:
+                    print(f"S3 Upload Error: {e}")
+                    # إذا فشل S3، سنستخدم الرابط المحلي كبديل مؤقت (إذا كان Render يدعم ذلك)
+                    # لكن الأفضل إبلاغ المستخدم بمشكلة الرفع
+                    return f"خطأ في رفع الملف لـ S3: {str(e)}"
                 
             if os.path.exists(video_path):
                 os.remove(video_path)
