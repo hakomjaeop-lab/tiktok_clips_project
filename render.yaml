@@ -1,8 +1,11 @@
 services:
   - type: web
-    name: video-clipper-clawcloud
+    name: tiktok-clips-project
     runtime: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: |
+      pip install -r requirements.txt
+      # تثبيت FFmpeg في بيئة Render
+      apt-get update && apt-get install -y ffmpeg
     startCommand: gunicorn app:app
     envVars:
       - key: PORT
